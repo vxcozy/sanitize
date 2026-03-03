@@ -19,21 +19,27 @@ A 12-point pre-commit hook and Claude Code skill that blocks secrets, credential
 | 11 | `.gitignore` coverage gaps | block |
 | 12 | Test files with real credentials | block |
 
-## Quick start
+## Install
+
+### Agent skill (Claude Code, Cursor, Copilot, etc.)
 
 ```bash
-# Install into a repo
-./scripts/install-hooks.sh /path/to/your/repo
+npx skills add vxcozy/sanitize
+```
 
-# Or install into multiple repos at once
-./scripts/install-hooks.sh ./repo-a ./repo-b ./repo-c
+This installs the `/sanitize` slash command into your project. Works with any tool that supports the [Agent Skills](https://agentskills.io) standard.
+
+### Pre-commit hook
+
+```bash
+git clone https://github.com/vxcozy/sanitize.git
+./sanitize/scripts/install-hooks.sh /path/to/your/repo
+
+# Or multiple repos at once
+./sanitize/scripts/install-hooks.sh ./repo-a ./repo-b ./repo-c
 ```
 
 The hook runs automatically on every `git commit`. Bypass with `git commit --no-verify` when needed.
-
-## Claude Code skill
-
-Copy `.claude/commands/sanitize.md` into your project's `.claude/commands/` directory. Then run `/sanitize` in Claude Code for an interactive full-repo audit.
 
 ## Documentation
 

@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# ─── 12-Point Pre-Commit Sanitization Hook ──────────────────────────────────
+# Blocks commits containing secrets, keys, or sensitive data.
+#
+# Install:  ./install-hooks.sh /path/to/repo
+#           (or copy this file to .git/hooks/pre-commit)
+# Bypass:   git commit --no-verify
+# ─────────────────────────────────────────────────────────────────────────────
+
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m'
+
+ERRORS=0
+WARNINGS=0
+
+pass()   { printf "${GREEN}pass${NC}\n"; }
+fail()   { printf "${RED}FAIL${NC}\n"; ERRORS=$((ERRORS + 1)); }
+warn()   { printf "${YELLOW}warn${NC}\n"; WARNINGS=$((WARNINGS + 1)); }
+check()  { printf "  ${DIM}[%2d/12]${NC} %-48s " "$1" "$2"; }
+detail() { printf "         ${DIM}↳${NC} %s\n" "$1"; }
+
+# ─── Staged files (skip deletions and binary) ───────────────────────────────
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
+[ -z "$STAGED" ] && exit 0
+
+# Added/modified lines only (+ prefix, skip diff headers)
+DIFF=$(git diff --cached --no-color -U0 2>/dev/null | grep '^+' | grep -v '^+++ ' || true)
+
+printf "\n${BOLD}Pre-commit: 12-point sanitization${NC}\n\n"
+
+# ─── 1. Full file audit ─────────────────────────────────────────────────────
+
+check 1 "Staged files"
+COUNT=$(echo "$STAGED" | wc -l | tr -d ' ')
+printf "${GREEN}${COUNT} file(s)${NC}\n"
+echo "$STAGED" | sed 's/^/         /'
+echo ""
+
+# ─── 2. Private keys / mnemonics ────────────────────────────────────────────
+
+check 2 "Private keys / mnemonics"
+HITS=$(echo "$DIFF" | grep -Ei '(0x[0-9a-fA-F]{64}\b|BEGIN.*(PRIVATE|RSA|EC|DSA)\s*KEY|mnemonic\s*[=:]|seed.?phrase\s*[=:])' 2>/dev/null | head -3 || true)
+if [ -n "$HITS" ]; then
+  fail
+  echo "$HITS" | sed 's/^+//' | sed 's/^/         /'
+else
+  pass
+fi
+
+# ─── 3. API keys / tokens / secrets ─────────────────────────────────────────
+
+check 3 "API keys / tokens / secrets"
+HITS=$(echo "$DIFF" | grep -Ei '(sk-[a-zA-Z0-9_-]{20,}|sk_live_[a-zA-Z0-9]+|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36}|glpat-[a-zA-Z0-9_-]{20,}|xox[bpsa]-[a-zA-Z0-9_-]+)' 2>/dev/null | head -3 || true)
+if [ -n "$HITS" ]; then
+  fail
+  echo "$HITS" | sed 's/^+//' | sed 's/^/         /'
+else
+  pass
+fi
+
+# ─── 4. .env files ──────────────────────────────────────────────────────────
+
+check 4 ".env files"
+ENV_FILES=$(echo "$STAGED" | grep -E '^\.env($|\.)' | grep -v '\.example$' || true)
+if [ -n "$ENV_FILES" ]; then
+  fail
+  echo "$ENV_FILES" | sed 's/^/         /'
+else
+  pass
+fi
+
+# ─── 5. .mcp.json ───────────────────────────────────────────────────────────
+
+check 5 ".mcp.json"
+if echo "$STAGED" | grep -qE '(^|/)\.mcp\.json$'; then
+  fail
+else
+  pass
+fi
+
+# ─── 6. config.json / config files with secrets ─────────────────────────────
+
+check 6 "Config files with secrets"
+CFG=$(echo "$STAGED" | grep -Ei '(^|/)(config|settings|credentials)\.(json|ya?ml|toml)$' || true)
+if [ -n "$CFG" ]; then
+  HAS_SECRET=false
+  while IFS= read -r f; do
+    if git show ":$f" 2>/dev/null | grep -Eiq '(private.?key|secret|password|token\s*[=:"])'; then
+      HAS_SECRET=true
+      detail "$f contains secret-like values"
+    fi
+  done <<< "$CFG"
+  if $HAS_SECRET; then
+    fail
+  else
+    warn
+    detail "Config file staged — verify no secrets"
+  fi
+else
+  pass
+fi
+
+# ─── 7. Plaintext passwords ─────────────────────────────────────────────────
+
+check 7 "Plaintext passwords"
+HITS=$(echo "$DIFF" | grep -Ei "(password|passwd|pwd)\s*[=:]\s*[\"'][^\"']{2,}" 2>/dev/null | grep -Ev '(process\.env|env\.|getenv|os\.environ|\$\{|<password>|placeholder|example|changeme|your_)' | head -3 || true)
+if [ -n "$HITS" ]; then
+  fail
+  echo "$HITS" | sed 's/^+//' | sed 's/^/         /'
+else
+  pass
+fi
+
+# ─── 8. RPC URLs with embedded keys ─────────────────────────────────────────
+
+check 8 "RPC URLs with keys"
+HITS=$(echo "$DIFF" | grep -Ei 'https?://.*(infura|alchemy|quicknode|chainnodes|moralis)\.[a-z]+.*/[a-zA-Z0-9_-]{20,}' 2>/dev/null | head -3 || true)
+if [ -n "$HITS" ]; then
+  fail
+  echo "$HITS" | sed 's/^+//' | sed 's/^/         /'
+else
+  pass
+fi
+
+# ─── 9. Real wallet addresses in non-test source ────────────────────────────
+
+check 9 "Wallet addresses (non-test)"
+SRC=$(echo "$STAGED" | grep -Ev '\.(test|spec)\.(ts|js|tsx|jsx)$' | grep -Ev '(__test__|__mock__|fixture|mock)' || true)
+ADDR_FOUND=false
+if [ -n "$SRC" ]; then
+  while IFS= read -r f; do
+    ADDRS=$(git diff --cached -- "$f" 2>/dev/null | grep '^+' | grep -v '^+++ ' | grep -oE '0x[0-9a-fA-F]{40}' | grep -Ev '(0x0{40}|0x[aAbBcCdDeEfF]{40}|0xdead|0xbeef)' | sort -u | head -3 || true)
+    if [ -n "$ADDRS" ]; then
+      ADDR_FOUND=true
+      detail "Review addresses in $f"
+    fi
+  done <<< "$SRC"
+fi
+$ADDR_FOUND && warn || pass
+
+# ─── 10. console.log leaking sensitive data ──────────────────────────────────
+
+check 10 "console.log leaking data"
+HITS=$(echo "$DIFF" | grep -Ei 'console\.(log|debug|info|warn)\(.*\b(key|secret|token|password|private|mnemonic|credential)\b' 2>/dev/null | head -3 || true)
+if [ -n "$HITS" ]; then
+  warn
+  echo "$HITS" | sed 's/^+//' | sed 's/^/         /'
+else
+  pass
+fi
+
+# ─── 11. .gitignore coverage ────────────────────────────────────────────────
+
+check 11 ".gitignore coverage"
+if [ -f .gitignore ]; then
+  MISSING=""
+  for pat in ".env" ".mcp.json" "config.json" ".claude" "node_modules"; do
+    grep -qF "$pat" .gitignore 2>/dev/null || MISSING="$MISSING $pat"
+  done
+  if [ -n "$MISSING" ]; then
+    fail
+    detail "Missing from .gitignore:$MISSING"
+  else
+    pass
+  fi
+else
+  fail
+  detail "No .gitignore found"
+fi
+
+# ─── 12. Test files with real credentials ────────────────────────────────────
+
+check 12 "Test files with real credentials"
+TESTS=$(echo "$STAGED" | grep -E '\.(test|spec)\.(ts|js|tsx|jsx)$' || true)
+if [ -n "$TESTS" ]; then
+  TEST_CREDS=false
+  while IFS= read -r f; do
+    if git show ":$f" 2>/dev/null | grep -Ei '(sk-[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36}|real[_-]?(key|token|secret))' > /dev/null 2>&1; then
+      TEST_CREDS=true
+      detail "$f"
+    fi
+  done <<< "$TESTS"
+  $TEST_CREDS && fail || pass
+else
+  pass
+fi
+
+# ─── Summary ─────────────────────────────────────────────────────────────────
+
+echo ""
+if [ "$ERRORS" -gt 0 ]; then
+  printf "  ${RED}${BOLD}BLOCKED: ${ERRORS} check(s) failed${NC}\n"
+  printf "  ${DIM}Fix the issues above or bypass with: git commit --no-verify${NC}\n\n"
+  exit 1
+elif [ "$WARNINGS" -gt 0 ]; then
+  printf "  ${YELLOW}${BOLD}Passed with ${WARNINGS} warning(s) — review before pushing${NC}\n\n"
+  exit 0
+else
+  printf "  ${GREEN}${BOLD}All 12 checks passed${NC}\n\n"
+  exit 0
+fi

@@ -6,8 +6,21 @@ This tutorial walks you through installing and using the sanitize pre-commit hoo
 
 - A git repository
 - Bash (macOS, Linux, or WSL on Windows)
+- Node.js (for `npx skills` — optional)
 
-## Step 1: Clone or download sanitize
+## Step 1: Install
+
+### Option A: Agent skill (recommended)
+
+If you use Claude Code, Cursor, Copilot, or any tool supporting [Agent Skills](https://agentskills.io):
+
+```bash
+npx skills add vxcozy/sanitize
+```
+
+This installs the `/sanitize` slash command into your project. Skip to Step 5 to use it.
+
+### Option B: Pre-commit hook
 
 ```bash
 git clone https://github.com/vxcozy/sanitize.git
@@ -85,16 +98,11 @@ rm bad.txt
 git reset HEAD bad.txt
 ```
 
-## Step 5 (optional): Install the Claude Code skill
+## Step 5: Use the /sanitize skill
 
-If you use Claude Code, copy the skill file into your project:
+If you installed via `npx skills add` (Step 1A), the `/sanitize` command is already available.
 
-```bash
-mkdir -p /path/to/your/project/.claude/commands
-cp .claude/commands/sanitize.md /path/to/your/project/.claude/commands/
-```
-
-Now you can run `/sanitize` in Claude Code for an interactive audit that scans your entire repository with detailed file:line references.
+Run `/sanitize` in your AI coding tool for an interactive audit that scans your entire repository with detailed file:line references.
 
 ## Next steps
 
